@@ -13,6 +13,13 @@ export type CloudDeployment = {
   failureReason?: string | null
 }
 
+const DEPENDENCY_CHANGE = /\b(?:npm|pnpm|yarn)\s+(?:install|i|add|uninstall|remove|rm|update|up|upgrade|ci|audit\s+fix)\b|\bcomposer\s+(?:require|remove|update|upgrade|bump|install)\b/
+
+/** Whether `command` changes the installed packages, so the dependency counts need refreshing. */
+export function changesDependencies(command: string): boolean {
+  return DEPENDENCY_CHANGE.test(command)
+}
+
 /** Reads `composer audit --format=json` and `composer outdated --direct --format=json`. */
 export function composerCounts(auditJson: string, outdatedJson: string): PackageCounts {
   const audit = parseJson<ComposerAudit>(auditJson, 'composer audit')

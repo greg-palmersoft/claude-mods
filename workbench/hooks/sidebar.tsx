@@ -1,6 +1,6 @@
 import type { EngineInterface } from 'claude-code'
 
-import type { CacheState, DependencyReport, DeployReport, Deployment, GuardrailEvent, PackageCounts, TestRun, UsageSnapshot } from '../types'
+import type { CacheState, DependencyReport, DeployReport, Deployment, PackageCounts, TestRun, UsageSnapshot } from '../types'
 import { ago } from './reports'
 import { LIMIT_LABELS, bar, cacheAge, compactAdvice, formatTokens, meterColour, orderLimits, untilReset } from './usage'
 
@@ -10,7 +10,6 @@ export type WorkbenchData = {
   snapshot: UsageSnapshot | null
   cache: CacheState
   testRun: TestRun | null
-  guardrails: GuardrailEvent[]
   dependencies: DependencyReport
   deploys: DeployReport
   now: number
@@ -191,24 +190,6 @@ function DeploysSection({ ui, data }: { ui: Ui; data: WorkbenchData }) {
   )
 }
 
-function GuardrailsSection({ ui, data }: { ui: Ui; data: WorkbenchData }) {
-  const { Box, Text } = ui
-
-  if (data.guardrails.length === 0) {
-    return <Text key="guardrails-none" dimColor>Nothing held this session.</Text>
-  }
-
-  return (
-    <Box key="guardrails" flexDirection="column">
-      {data.guardrails.slice(-6).reverse().map((event, index) => (
-        <Text key={`guardrail-${index}`} color={event.outcome === 'allowed' ? 'warning' : 'error'} wrap="truncate">
-          {clockTime(event.at)} {event.outcome} · {event.reason}
-        </Text>
-      ))}
-    </Box>
-  )
-}
-
 /** The sidebar: one section per concern, each hidden where the project has nothing to show. */
 export function Sidebar({ ui, data, actions }: { ui: Ui; data: WorkbenchData; actions: SidebarActions }) {
   const { Box, Button } = ui
@@ -233,8 +214,6 @@ export function Sidebar({ ui, data, actions }: { ui: Ui; data: WorkbenchData; ac
         </Heading>
       )}
       {data.deploys.isAvailable && <DeploysSection ui={ui} data={data} />}
-      <Heading ui={ui} title="Guardrails" />
-      <GuardrailsSection ui={ui} data={data} />
     </Box>
   )
 }

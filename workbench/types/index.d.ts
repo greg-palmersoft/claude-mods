@@ -33,10 +33,6 @@ export type TestRun = {
   warnings: string[]
 }
 
-export type GuardrailOutcome = 'allowed' | 'blocked'
-
-export type GuardrailEvent = { at: number; rule: string; reason: string; outcome: GuardrailOutcome }
-
 /** Packages with a security advisory, and outdated packages that have none. */
 export type PackageCounts = { security: number; other: number }
 
@@ -75,7 +71,6 @@ declare module 'claude-code' {
       cache: CacheState
       tick: number
       testRun: TestRun | null
-      guardrails: GuardrailEvent[]
       dependencies: DependencyReport
       deploys: DeployReport
       isBandHidden: boolean

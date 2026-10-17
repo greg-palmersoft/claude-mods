@@ -1,7 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { changesDependencies, checkBash, checkFile } from '../hooks/guardrails'
-import { composerCounts, deployState, finishedSince, latestDeployment, npmCounts } from '../hooks/reports'
+import { changesDependencies, composerCounts, deployState, finishedSince, latestDeployment, npmCounts } from '../hooks/reports'
 import { detectRunner, savedOutputPath, tallyOutput, withSavedOutput } from '../hooks/testRuns'
 
 const PEST_PASSED = '\n  \u001b[90;1m.\u001b[39;22m\u001b[90;1m.\u001b[39;22m.\n\n  \u001b[90mTests:\u001b[39m    \u001b[32;1m990 passed\u001b[39;22m (4002 assertions)\n  Duration: 42.47s\n'
@@ -15,49 +14,12 @@ const PEST_FAILED = [
 ].join('\n')
 const VITEST_FAILED = ' FAIL  tests/js/Toggle.spec.js > Toggle > emits a boolean\n\n Test Files  1 failed | 9 passed (10)\n      Tests  2 failed | 118 passed (120)\n'
 
-describe('guardrails', () => {
-  test('hold dependency changes, builds and destructive database commands', async () => {
-    expect(checkBash('npm install lodash')?.rule).toBe('dependencies')
-    expect(checkBash('cd app && composer require foo/bar')?.rule).toBe('dependencies')
-    expect(checkBash('npm audit fix --force')?.rule).toBe('dependencies')
-    expect(checkBash('npm run build')?.rule).toBe('build')
-    expect(checkBash('php artisan migrate:fresh --seed')?.rule).toBe('database')
-    expect(checkBash('npm install --legacy-peer-deps')).toMatchObject({ rule: 'legacy-peer-deps', isHardBlock: true })
-  })
-
-  test('leave everyday commands alone', async () => {
-    for (const command of ['npm ci', 'composer install', 'npm run dev', 'php artisan migrate', 'git status', 'npm run lint']) {
-      expect(checkBash(command)).toBeUndefined()
-    }
-  })
-
-  test('hold work-discarding git only over a dirty tree, and never branch creation', async () => {
-    expect(checkBash('git checkout -- app/Foo.php', { isWorkingTreeDirty: true })?.rule).toBe('git')
-    expect(checkBash('git checkout -- app/Foo.php', { isWorkingTreeDirty: false })).toBeUndefined()
-    expect(checkBash('git checkout -b feature', { isWorkingTreeDirty: true })).toBeUndefined()
-    expect(checkBash('git reset --hard origin/main', { isWorkingTreeDirty: true })?.rule).toBe('git')
-  })
-
-  test('hold too many test workers and a second PHP test run', async () => {
-    expect(checkBash('php artisan test --parallel --processes=8')?.rule).toBe('test-workers')
-    expect(checkBash('php artisan test --parallel --processes=4')).toBeUndefined()
-    expect(checkBash('php artisan test --compact', { isPhpTestRunActive: true })?.rule).toBe('concurrent-tests')
-  })
-
-  test('hold edits to env files, manifests and shipped migrations', async () => {
-    expect(checkFile('/app/.env')?.rule).toBe('env')
-    expect(checkFile('/app/.env.testing')?.rule).toBe('env')
-    expect(checkFile('/app/.env.example')).toBeUndefined()
-    expect(checkFile('/app/package.json')?.rule).toBe('dependencies')
-    expect(checkFile('/app/composer.lock')?.rule).toBe('dependencies')
-    expect(checkFile('/app/database/migrations/2026_01_01_create_x.php', true)?.rule).toBe('migration')
-    expect(checkFile('/app/database/migrations/2026_01_01_create_x.php', false)).toBeUndefined()
-    expect(checkFile('/app/app/Models/User.php')).toBeUndefined()
-  })
-
+describe('dependency changes', () => {
   test('know which commands change the installed packages', async () => {
     expect(changesDependencies('npm ci')).toBe(true)
+    expect(changesDependencies('npm install lodash')).toBe(true)
     expect(changesDependencies('composer update laravel/framework')).toBe(true)
+    expect(changesDependencies('composer install')).toBe(true)
     expect(changesDependencies('npm run dev')).toBe(false)
   })
 })
@@ -133,33 +95,5 @@ describe('reports', () => {
 
     expect(finishedSince([running, older], [done, older])).toEqual([done])
     expect(finishedSince([], [done])).toEqual([])
-  })
-})
-
-describe('guardrails resist rephrasing', () => {
-  test('a branch creation chained to a discarding command still needs the dirty check', async () => {
-    expect(checkBash('git checkout -b x && git checkout -- app/Foo.php', { isWorkingTreeDirty: true })?.rule).toBe('git')
-    expect(checkBash('git checkout -b x; git status', { isWorkingTreeDirty: true })).toBeUndefined()
-    expect(checkBash('git checkout -f -b x', { isWorkingTreeDirty: true })?.rule).toBe('git')
-    expect(checkBash('git checkout -B x --force', { isWorkingTreeDirty: true })?.rule).toBe('git')
-    expect(checkBash('git checkout -b x -- app/Foo.php', { isWorkingTreeDirty: true })?.rule).toBe('git')
-    expect(checkBash('git switch -c x --discard-changes', { isWorkingTreeDirty: true })?.rule).toBe('git')
-    expect(checkBash('git checkout -b x --f', { isWorkingTreeDirty: true })?.rule).toBe('git')
-    expect(checkBash('git checkout -b "x" origin/main', { isWorkingTreeDirty: true })?.rule).toBe('git')
-    expect(checkBash('git checkout -b feature/new-thing origin/development', { isWorkingTreeDirty: true })).toBeUndefined()
-  })
-
-  test('global options and spread flags do not hide the subcommand', async () => {
-    expect(checkBash('git -C ../app checkout -- .', { isWorkingTreeDirty: true })?.rule).toBe('git')
-    expect(checkBash('git clean -d -f', { isWorkingTreeDirty: true })?.rule).toBe('git')
-    expect(checkBash('git clean --force', { isWorkingTreeDirty: true })?.rule).toBe('git')
-    expect(checkBash('git clean -n', { isWorkingTreeDirty: true })).toBeUndefined()
-    expect(checkBash('php artisan --env=testing migrate:fresh')?.rule).toBe('database')
-    expect(checkBash('cd app && php artisan db:wipe --force')?.rule).toBe('database')
-  })
-
-  test('path case does not matter on a case-insensitive disk', async () => {
-    expect(checkFile('/app/.ENV')?.rule).toBe('env')
-    expect(checkFile('/app/Package.json')?.rule).toBe('dependencies')
   })
 })

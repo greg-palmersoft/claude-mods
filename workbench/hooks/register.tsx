@@ -1,10 +1,8 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionContextUsage, SessionRateLimit, ToolCallResult } from 'claude-code'
 
-import type { CacheState, DependencyReport, DeployReport, Deployment, GuardrailEvent, PackageCounts, TestRun, TestRunner, UsageSnapshot } from '../types'
-import { changesDependencies, checkBash, checkFile, isMigrationFile, isPhpTestRun, needsDirtyCheck } from './guardrails'
-import type { Hold } from './guardrails'
-import { composerCounts, finishedSince, latestDeployment, npmCounts } from './reports'
+import type { CacheState, DependencyReport, DeployReport, Deployment, PackageCounts, TestRun, TestRunner, UsageSnapshot } from '../types'
+import { changesDependencies, composerCounts, finishedSince, latestDeployment, npmCounts } from './reports'
 import { Sidebar, bandChips } from './sidebar'
 import type { WorkbenchData } from './sidebar'
 import { detectRunner, outputPathFor, savedOutputPath, tallyOutput, withSavedOutput } from './testRuns'
@@ -14,7 +12,6 @@ const snapshot = atom({ plugin: 'workbench', key: 'snapshot' } as const, null)
 const cache = atom({ plugin: 'workbench', key: 'cache' } as const, { idlePings: 0 } as CacheState)
 const tick = atom({ plugin: 'workbench', key: 'tick' } as const, 0)
 const testRun = atom({ plugin: 'workbench', key: 'testRun' } as const, null as TestRun | null)
-const guardrails = atom({ plugin: 'workbench', key: 'guardrails' } as const, [] as GuardrailEvent[])
 const dependencies = atom({ plugin: 'workbench', key: 'dependencies' } as const, { isChecking: false, errors: [] } as DependencyReport)
 const deploys = atom({ plugin: 'workbench', key: 'deploys' } as const, { isAvailable: false, deployments: [] } as DeployReport)
 const isBandHidden = atom({ plugin: 'workbench', key: 'isBandHidden' } as const, false)
@@ -27,8 +24,6 @@ const DEPENDENCY_CHECK_MS = 6 * 60 * 60_000
 const DEPLOY_CHECK_MS = 10 * 60_000
 const DEPLOY_POLL_MS = 30_000
 const DEPLOY_WATCH_MS = 20 * 60_000
-const GUARDRAIL_HISTORY = 20
-const APPROVAL_TEXT_LIMIT = 1500
 const PING_PROMPT = 'Keep-alive ping to refresh the prompt cache. Reply with OK and nothing else.'
 const DEPLOY_FIELDS = '--fields=status,commitHash,commitMessage,startedAt,finishedAt,failureReason'
 
@@ -274,76 +269,6 @@ async function pollDeploys($: EngineInterface): Promise<void> {
   }
 }
 
-/* Guardrails */
-
-async function workingTreeIsDirty($: EngineInterface): Promise<boolean> {
-  const status = await run($, ['git', 'status', '--porcelain'], 30_000)
-
-  return status.exitCode === 0 && status.stdout.trim() !== ''
-}
-
-async function phpTestRunIsActive($: EngineInterface): Promise<boolean> {
-  const listed = await run($, ['ps', '-Ao', 'command'], 30_000)
-
-  return listed.stdout.split('\n').some(line => isPhpTestRun(line) && !line.includes('ps -Ao'))
-}
-
-/** Whether `path` is on the remote default branch, so the migration in it has shipped. */
-async function migrationHasShipped($: EngineInterface, path: string): Promise<boolean> {
-  const tracked = await run($, ['git', 'ls-files', '--full-name', '--error-unmatch', path], 30_000)
-
-  if (tracked.exitCode !== 0) {
-    return false
-  }
-
-  const head = await run($, ['git', 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], 30_000)
-  const branch = head.exitCode === 0 ? head.stdout.trim() : 'origin/main'
-  const shown = await run($, ['git', 'cat-file', '-e', `${branch}:${tracked.stdout.trim()}`], 30_000)
-
-  return shown.exitCode === 0
-}
-
-async function recordGuardrail($: EngineInterface, hold: Hold, outcome: GuardrailEvent['outcome']): Promise<void> {
-  const at = await $.clock.now()
-  await update($, guardrails, list => [...list, { at, rule: hold.rule, reason: hold.reason, outcome }].slice(-GUARDRAIL_HISTORY))
-}
-
-/** The command as the approval shows it: whole, or plainly marked where the dialog's limit cuts it. */
-function shownInFull(command: string): string {
-  return command.length <= APPROVAL_TEXT_LIMIT
-    ? command
-    : `${command.slice(0, APPROVAL_TEXT_LIMIT)} … [${command.length - APPROVAL_TEXT_LIMIT} more characters not shown]`
-}
-
-/** Asks the person about a held action; anything but an explicit allow blocks it. */
-async function isAllowed($: EngineInterface, hold: Hold, subject: string): Promise<boolean> {
-  if (hold.isHardBlock === true) {
-    await recordGuardrail($, hold, 'blocked')
-
-    return false
-  }
-
-  let answer = 'Block'
-
-  try {
-    answer = await $.ui.ask(`Workbench guardrail: ${hold.reason} ${subject} — allow it?`, {
-      header: 'Guardrail',
-      options: ['Allow once', 'Block'],
-    })
-  } catch {
-    answer = 'Block'
-  }
-
-  const isAllowedOnce = answer === 'Allow once'
-  await recordGuardrail($, hold, isAllowedOnce ? 'allowed' : 'blocked')
-
-  return isAllowedOnce
-}
-
-function refusal(hold: Hold): { deny: string } {
-  return { deny: `Workbench guardrail: ${hold.reason}${hold.isHardBlock === true ? '' : ' The person did not allow it.'}` }
-}
-
 /** Bookkeeping once a command has run: never part of deciding whether it runs. */
 async function afterCommand($: EngineInterface, command: string, ran: ToolCallResult, isForegroundTestRun: boolean): Promise<void> {
   const hasFailed = ran.deny !== undefined || ran.isError === true
@@ -384,7 +309,6 @@ async function readData($: EngineInterface): Promise<WorkbenchData> {
     snapshot: await read($, snapshot),
     cache: await read($, cache),
     testRun: await read($, testRun),
-    guardrails: await read($, guardrails),
     dependencies: await read($, dependencies),
     deploys: await read($, deploys),
     now: await $.clock.now(),
@@ -439,15 +363,6 @@ export const register: Register = on => {
   })
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
-    const hold = checkBash(e.command, {
-      isWorkingTreeDirty: needsDirtyCheck(e.command) ? await workingTreeIsDirty($) : undefined,
-      isPhpTestRunActive: isPhpTestRun(e.command) ? await phpTestRunIsActive($) : undefined,
-    })
-
-    if (hold !== undefined && !(await isAllowed($, hold, `\`${shownInFull(e.command)}\``))) {
-      return refusal(hold)
-    }
-
     const runner = detectRunner(e.command)
     let command = e.command
 
@@ -463,35 +378,10 @@ export const register: Register = on => {
 
     return ran
   }).catch(($, e, next) => {
-    if (next.called) {
-      return next(e)
-    }
+    $.ui.log(`workbench: test-run tracking failed (${next.error.message ?? next.error.kind}); the command ran as given.`, { to: 'debug' })
 
-    $.ui.log(`workbench: a guardrail check failed (${next.error.message ?? next.error.kind}), so the command was not run.`)
-
-    return { deny: 'Workbench guardrail: the safety check itself failed, so this command was not run. Tell the person; they can run it themselves.' }
+    return next(e)
   })
-
-  for (const tool of ['Edit', 'Write', 'NotebookEdit'] as const) {
-    on('tool.call', { tool }, async ($, e, next) => {
-      const path = 'notebook_path' in e ? e.notebook_path : e.file_path
-      const hold = checkFile(path, isMigrationFile(path) && (await migrationHasShipped($, path)))
-
-      if (hold !== undefined && !(await isAllowed($, hold, `(${path})`))) {
-        return refusal(hold)
-      }
-
-      return next(e)
-    }).catch(($, e, next) => {
-      if (next.called) {
-        return next(e)
-      }
-
-      $.ui.log(`workbench: a guardrail check failed (${next.error.message ?? next.error.kind}), so the edit was not made.`)
-
-      return { deny: 'Workbench guardrail: the safety check itself failed, so this edit was not made. Tell the person; they can make it themselves.' }
-    })
-  }
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const ui = $.ui.resolve(e)

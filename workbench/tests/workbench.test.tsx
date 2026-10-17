@@ -13,12 +13,12 @@ const CONTEXT = { tokens: 150_000, window: 200_000, percent: 75 }
 
 const PEST_OUTPUT = '  ..⨯.\n\n  FAILED  Tests\\Feature\\InvoiceTest > it soft deletes   ExpectationFailedException\n\n  Tests:    1 failed, 3 passed (9 assertions)\n'
 
-type World = { commands: string[]; questions: string[]; files: Record<string, string>; answer?: string; settle: () => Promise<void> }
+type World = { commands: string[]; files: Record<string, string>; settle: () => Promise<void> }
 
 /** The engine beneath the plugin: a project with a lock file each, on Laravel Cloud, and a clean tree. */
-function world(on: On, options: { answer?: string; brokenTool?: string } = {}): World {
+function world(on: On): World {
   const clock = mock.clock(on, { now: NOW })
-  const state: World = { commands: [], questions: [], files: {}, answer: options.answer, settle: () => clock.settle() }
+  const state: World = { commands: [], files: {}, settle: () => clock.settle() }
 
   on('session.usage', () => ({ value: { startedAt: NOW, context: { ...CONTEXT }, rateLimits: [] } }))
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
@@ -30,10 +30,6 @@ function world(on: On, options: { answer?: string; brokenTool?: string } = {}): 
   on('fs.read', (_$, e) => ({ value: state.files[e.path] ?? '' }))
   on('process.run', (_$, e) => {
     const line = e.argv.join(' ')
-
-    if (e.argv[0] === options.brokenTool) {
-      throw new Error(`${options.brokenTool} is missing`)
-    }
     const stdout = line.startsWith('composer audit')
       ? JSON.stringify({ advisories: { 'laravel/framework': [{}] } })
       : line.startsWith('composer outdated')
@@ -49,14 +45,6 @@ function world(on: On, options: { answer?: string; brokenTool?: string } = {}): 
                 : ''
 
     return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
-  })
-  on('tool.call', { tool: 'AskUserQuestion' }, (_$, e) => {
-    const question = e.questions[0]?.question ?? ''
-    state.questions.push(question)
-
-    return state.answer === undefined
-      ? { deny: 'dismissed' }
-      : { result: { questions: e.questions, answers: { [question]: state.answer } } }
   })
   on('tool.call', { tool: 'Bash' }, (_$, e) => {
     state.commands.push(e.command)
@@ -77,34 +65,17 @@ function world(on: On, options: { answer?: string; brokenTool?: string } = {}): 
   return state
 }
 
-describe('guardrails', () => {
-  test('a held command runs only once the person allows it', async ($, on) => {
-    const state = world(on, { answer: 'Allow once' })
+describe('commands', () => {
+  test('run straight through, with nothing held for approval', async ($, on) => {
+    const state = world(on)
+    on('tool.call', { tool: 'AskUserQuestion' }, () => {
+      throw new Error('no question should be asked')
+    })
 
     const ran = await $.tool.call({ tool: 'Bash', command: 'npm install lodash' })
 
-    expect(state.questions[0]).toMatch(/dependency tree.*npm install lodash.*allow it\?/)
     expect(ran.deny).toBeUndefined()
     expect(state.commands).toEqual(['npm install lodash'])
-  })
-
-  test('a held command the person dismisses never runs', async ($, on) => {
-    const state = world(on)
-
-    const ran = await $.tool.call({ tool: 'Bash', command: 'php artisan migrate:fresh' })
-
-    expect(ran.deny).toMatch(/migrate:fresh destroys/)
-    expect(state.commands).toEqual([])
-  })
-
-  test('an edit to .env is held', async ($, on) => {
-    const state = world(on)
-    on('tool.call', { tool: 'Edit' }, () => ({ result: {} }))
-
-    const ran = await $.tool.call({ tool: 'Edit', file_path: '/app/.env', old_string: 'A=1', new_string: 'A=2' })
-
-    expect(ran.deny).toMatch(/environment configuration/)
-    expect(state.questions).toHaveLength(1)
   })
 })
 
@@ -150,7 +121,6 @@ describe('the sidebar', () => {
       expect(await ui.find({ type: 'Text', text: '2 other' })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: /✓ staging/ })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: /3f4febc9/ })).toBeDefined()
-      expect(await ui.find({ type: 'Text', text: 'Nothing held this session.' })).toBeDefined()
       await ui.unmount()
     }
   })
@@ -185,25 +155,5 @@ describe('the band', () => {
     expect(await hidden.find({ key: 'sidebar' })).toBeUndefined()
     expect(await hidden.find({ key: 'engine' })).toBeDefined()
     await hidden.unmount()
-  })
-})
-
-describe('guardrail failures', () => {
-  test('a long command is shown whole in the approval', async ($, on) => {
-    const state = world(on)
-    const command = `npm install ${'a'.repeat(300)} && rm -rf ~/precious`
-
-    await $.tool.call({ tool: 'Bash', command })
-
-    expect(state.questions[0]).toContain('rm -rf ~/precious')
-  })
-
-  test('a check that fails before the command runs blocks it', async ($, on) => {
-    const state = world(on, { brokenTool: 'git' })
-
-    const ran = await $.tool.call({ tool: 'Bash', command: 'git checkout -- .' })
-
-    expect(ran.deny).toMatch(/safety check itself failed/)
-    expect(state.commands).toEqual([])
   })
 })
