@@ -14,6 +14,7 @@ const DESTRUCTIVE_DATABASE = /\bartisan\b.*?\s(migrate:fresh|migrate:refresh|mig
 const WORK_DISCARDING_GIT = /\bgit\b.*?\s(?:checkout|switch|restore|reset\s.*--hard|stash\s+(?:drop|clear))\b/
 const GIT_CLEAN_FORCED = /\bgit\b.*?\sclean\b.*\s(?:-\w*f\w*|--force)\b/
 const BRANCH_CREATION = /\bgit\b.*?\s(?:checkout\s+-[bB]|switch\s+-[cC])\s/
+const DISCARDING_OPTION = /\s(?:-\w*f\w*|--force|--discard-changes|--merge|-m|--)(?=\s)/
 const SEGMENT_BREAK = /&&|\|\||[;|\n&]/
 const PHP_TEST_RUN = /\b(?:artisan\s+test|vendor\/bin\/(?:pest|phpunit|paratest))\b/
 const TEST_PROCESSES = /--processes[=\s]+(\d+)/
@@ -30,7 +31,9 @@ function segments(command: string): string[] {
 
 /** Whether one segment is a git command that can discard uncommitted work. */
 function discardsWork(segment: string): boolean {
-  return GIT_CLEAN_FORCED.test(segment) || (WORK_DISCARDING_GIT.test(segment) && !BRANCH_CREATION.test(segment))
+  const isPlainBranchCreation = BRANCH_CREATION.test(segment) && !DISCARDING_OPTION.test(segment)
+
+  return GIT_CLEAN_FORCED.test(segment) || (WORK_DISCARDING_GIT.test(segment) && !isPlainBranchCreation)
 }
 
 /** Whether the Bash rules need the working tree's state to judge `command`. */

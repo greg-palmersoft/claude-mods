@@ -1,6 +1,6 @@
 {
   "name": "workbench",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "A sidebar for software work: plan limits, context and prompt cache, test runs, dependency health, Laravel Cloud deploys, and guardrails that hold risky actions for approval",
   "types": "./types/index.d.ts"
 }

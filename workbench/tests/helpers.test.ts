@@ -140,6 +140,10 @@ describe('guardrails resist rephrasing', () => {
   test('a branch creation chained to a discarding command still needs the dirty check', async () => {
     expect(checkBash('git checkout -b x && git checkout -- app/Foo.php', { isWorkingTreeDirty: true })?.rule).toBe('git')
     expect(checkBash('git checkout -b x; git status', { isWorkingTreeDirty: true })).toBeUndefined()
+    expect(checkBash('git checkout -f -b x', { isWorkingTreeDirty: true })?.rule).toBe('git')
+    expect(checkBash('git checkout -B x --force', { isWorkingTreeDirty: true })?.rule).toBe('git')
+    expect(checkBash('git checkout -b x -- app/Foo.php', { isWorkingTreeDirty: true })?.rule).toBe('git')
+    expect(checkBash('git switch -c x --discard-changes', { isWorkingTreeDirty: true })?.rule).toBe('git')
   })
 
   test('global options and spread flags do not hide the subcommand', async () => {
