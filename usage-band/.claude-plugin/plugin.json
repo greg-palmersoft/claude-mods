@@ -1,6 +1,0 @@
-{
-  "name": "usage-band",
-  "version": "0.2.2",
-  "description": "A band above the prompt showing the 5-hour and 7-day limits, context window fill, when to compact, and the prompt cache's age, pinging an idle cache to keep it warm",
-  "types": "./types/index.d.ts"
-}

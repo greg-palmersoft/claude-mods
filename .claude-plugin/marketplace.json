@@ -2,6 +2,6 @@
   "name": "gregpalmer-mods",
   "owner": { "name": "Greg Palmer" },
   "plugins": [
-    { "name": "usage-band", "source": "./usage-band" }
+    { "name": "workbench", "source": "./workbench" }
   ]
 }

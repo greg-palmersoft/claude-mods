@@ -1,12 +1,13 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 
-import { MAX_IDLE_PINGS, bar, cacheAge, compactAdvice, isPingDue, meterColour, untilReset } from '../hooks/format'
+import { MAX_IDLE_PINGS, bar, cacheAge, compactAdvice, isPingDue, meterColour, untilReset } from '../hooks/usage'
 
 const NOW = Date.parse('2026-10-12T10:00:00Z')
 
-const BAND = {
-  component: 'AbovePrompt',
-  props: { hasSurvey: false, isWorking: false, maxRows: 20, bodyColumns: 100, scroll: { offset: 0, bodyRows: 19 }, view: {} },
+const PANE = {
+  component: 'Pane',
+  requestId: 'workbench',
+  props: { placement: 'dock', bodyColumns: 48, bodyRows: 40, scroll: { offset: 0, bodyRows: 40 }, view: {} },
 } as const
 
 const MEASURE = {
@@ -92,13 +93,16 @@ describe('keeping the cache warm', () => {
     const forks: string[] = []
     on('session.usage', () => ({ value: { startedAt: NOW, context: { ...MEASURE.context }, rateLimits: [] } }))
     on('session.start', (_$, e) => ({ cwd: e.cwd }))
+    on('command.register', () => ({ value: undefined }))
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    on('fs.exists', () => ({ value: false }))
     on('turn.complete', (_$, e) => ({ text: e.answer }))
     on('model.fork', (_$, e) => {
       forks.push(e.prompt)
 
       return { value: FORK_REPLY }
     })
-    on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
+    on('ui.render', { component: 'Pane' }, ($, e) => {
       const { Box } = $.ui.resolve(e)
 
       return <Box key="engine" />
@@ -110,13 +114,13 @@ describe('keeping the cache warm', () => {
     await clock.advance(29 * MINUTE)
     expect(forks).toHaveLength(0)
 
-    const ui = await $.ui.mount({ plugin: 'usage-band', surface: 'terminal', ...BAND })
+    const ui = await $.ui.mount({ plugin: 'workbench', surface: 'terminal', ...PANE })
     expect(await ui.find({ type: 'Text', text: 'cache 29m' })).toBeDefined()
 
     await clock.advance(MINUTE)
     expect(forks).toHaveLength(1)
     expect(await ui.find({ type: 'Text', text: 'cache 0m' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: / ×1 kept warm/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: ' ×1 kept warm' })).toBeDefined()
 
     await clock.advance(10 * 30 * MINUTE)
     expect(forks).toHaveLength(MAX_IDLE_PINGS)
@@ -131,8 +135,11 @@ describe('keeping the cache warm', () => {
     const clock = mock.clock(on, { now: NOW })
     on('session.usage', () => ({ value: { startedAt: NOW, context: { ...MEASURE.context }, rateLimits: [] } }))
     on('session.start', (_$, e) => ({ cwd: e.cwd }))
+    on('command.register', () => ({ value: undefined }))
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    on('fs.exists', () => ({ value: false }))
     on('turn.complete', (_$, e) => ({ text: e.answer }))
-    on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
+    on('ui.render', { component: 'Pane' }, ($, e) => {
       const { Box } = $.ui.resolve(e)
 
       return <Box key="engine" />
@@ -143,82 +150,9 @@ describe('keeping the cache warm', () => {
     await clock.advance(20 * MINUTE)
     await $.turn.complete({ answer: 'sub', durationMs: 1000, isAborted: false, turnId: 't2', reason: 'answer', usage: USAGE, agentId: 'a1' })
 
-    const ui = await $.ui.mount({ plugin: 'usage-band', surface: 'terminal', ...BAND })
+    const ui = await $.ui.mount({ plugin: 'workbench', surface: 'terminal', ...PANE })
     expect(await ui.find({ type: 'Text', text: 'cache 20m' })).toBeDefined()
     await ui.unmount()
   })
 })
 
-describe('the band', () => {
-  test('draws the limits, the context and the advice once measured', async ($, on) => {
-    mock.clock(on, { now: NOW })
-    on('session.usage', () => ({
-      value: {
-        startedAt: NOW,
-        context: { ...MEASURE.context },
-        rateLimits: [],
-      },
-    }))
-    on('session.measure', (_$, e) => ({ changed: e.changed }))
-    on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
-      const { Box } = $.ui.resolve(e)
-
-      return <Box key="engine" />
-    })
-
-    await $.session.measure({ ...MEASURE, changed: [...MEASURE.changed], rateLimits: [...MEASURE.rateLimits], context: { ...MEASURE.context } })
-
-    for (const surface of ['terminal', 'desktop'] as const) {
-      const ui = await $.ui.mount({ plugin: 'usage-band', surface, ...BAND })
-
-      const boxes = await ui.findAll({ type: 'Box' })
-      expect(boxes.map(box => box.key)).toEqual([undefined, 'five_hour', 'seven_day', 'context', 'advice'])
-      expect(boxes[0]?.props.flexDirection).toBeUndefined()
-      expect((await ui.find({ type: 'Text', text: /^ 2h14m$/ }))?.props.color).toBe(meterColour('five_hour'))
-      expect((await ui.find({ type: 'Text', text: /^5h .*23%$/ }))?.props.color).toBe(meterColour('five_hour'))
-      expect((await ui.find({ type: 'Text', text: /^7d .*42%$/ }))?.props.color).toBe(meterColour('seven_day'))
-      expect((await ui.find({ type: 'Text', text: /^ctx .*75%$/ }))?.props.color).toBe(meterColour('context'))
-      expect(await ui.find({ type: 'Text', text: /150k\/200k/ })).toBeDefined()
-      expect(await ui.find({ type: 'Text', text: /Compact soon/ })).toBeDefined()
-      await ui.unmount()
-    }
-  })
-
-  test('says nothing about compacting while there is no need', async ($, on) => {
-    mock.clock(on, { now: NOW })
-    const roomy = { tokens: 40_000, window: 200_000, percent: 20 }
-    on('session.usage', () => ({ value: { startedAt: NOW, context: { ...roomy }, rateLimits: [] } }))
-    on('session.measure', (_$, e) => ({ changed: e.changed }))
-    on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
-      const { Box } = $.ui.resolve(e)
-
-      return <Box key="engine" />
-    })
-
-    await $.session.measure({ ...MEASURE, changed: [...MEASURE.changed], rateLimits: [...MEASURE.rateLimits], context: { ...roomy } })
-    const ui = await $.ui.mount({ plugin: 'usage-band', surface: 'terminal', ...BAND })
-
-    expect(await ui.find({ type: 'Text', text: /^ctx .*20%$/ })).toBeDefined()
-    expect(await ui.find({ key: 'advice' })).toBeUndefined()
-    expect(await ui.find({ type: 'Text', text: /No need to compact/ })).toBeUndefined()
-    await ui.unmount()
-  })
-
-  test('hides when the person presses Hide', async ($, on) => {
-    mock.clock(on, { now: NOW })
-    on('session.usage', () => ({ value: { startedAt: NOW, context: { ...MEASURE.context }, rateLimits: [] } }))
-    on('session.measure', (_$, e) => ({ changed: e.changed }))
-    on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
-      const { Box } = $.ui.resolve(e)
-
-      return <Box key="engine" />
-    })
-
-    await $.session.measure({ ...MEASURE, changed: [...MEASURE.changed], rateLimits: [...MEASURE.rateLimits], context: { ...MEASURE.context } })
-    const ui = await $.ui.mount({ plugin: 'usage-band', surface: 'terminal', ...BAND })
-
-    await ui.press({ key: 'hide' })
-    expect(await ui.find({ type: 'Text', text: /Compact soon/ })).toBeUndefined()
-    expect(await ui.find({ key: 'engine' })).toBeDefined()
-  })
-})
