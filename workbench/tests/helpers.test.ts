@@ -144,6 +144,9 @@ describe('guardrails resist rephrasing', () => {
     expect(checkBash('git checkout -B x --force', { isWorkingTreeDirty: true })?.rule).toBe('git')
     expect(checkBash('git checkout -b x -- app/Foo.php', { isWorkingTreeDirty: true })?.rule).toBe('git')
     expect(checkBash('git switch -c x --discard-changes', { isWorkingTreeDirty: true })?.rule).toBe('git')
+    expect(checkBash('git checkout -b x --f', { isWorkingTreeDirty: true })?.rule).toBe('git')
+    expect(checkBash('git checkout -b "x" origin/main', { isWorkingTreeDirty: true })?.rule).toBe('git')
+    expect(checkBash('git checkout -b feature/new-thing origin/development', { isWorkingTreeDirty: true })).toBeUndefined()
   })
 
   test('global options and spread flags do not hide the subcommand', async () => {
