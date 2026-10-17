@@ -16,7 +16,7 @@ const PEST_OUTPUT = '  ..⨯.\n\n  FAILED  Tests\\Feature\\InvoiceTest > it soft
 type World = { commands: string[]; questions: string[]; files: Record<string, string>; answer?: string; settle: () => Promise<void> }
 
 /** The engine beneath the plugin: a project with a lock file each, on Laravel Cloud, and a clean tree. */
-function world(on: On, options: { answer?: string } = {}): World {
+function world(on: On, options: { answer?: string; brokenTool?: string } = {}): World {
   const clock = mock.clock(on, { now: NOW })
   const state: World = { commands: [], questions: [], files: {}, answer: options.answer, settle: () => clock.settle() }
 
@@ -30,6 +30,10 @@ function world(on: On, options: { answer?: string } = {}): World {
   on('fs.read', (_$, e) => ({ value: state.files[e.path] ?? '' }))
   on('process.run', (_$, e) => {
     const line = e.argv.join(' ')
+
+    if (e.argv[0] === options.brokenTool) {
+      throw new Error(`${options.brokenTool} is missing`)
+    }
     const stdout = line.startsWith('composer audit')
       ? JSON.stringify({ advisories: { 'laravel/framework': [{}] } })
       : line.startsWith('composer outdated')
@@ -109,6 +113,7 @@ describe('test runs', () => {
     const state = world(on)
 
     await $.tool.call({ tool: 'Bash', command: 'php artisan test --compact' })
+    await state.settle()
 
     expect(state.commands[0]).toMatch(/^\( set -o pipefail; \( php artisan test --compact\n\) 2>&1 \| tee \/tmp\/test-output-pest-\d+\.txt \)$/)
 
@@ -180,5 +185,25 @@ describe('the band', () => {
     expect(await hidden.find({ key: 'sidebar' })).toBeUndefined()
     expect(await hidden.find({ key: 'engine' })).toBeDefined()
     await hidden.unmount()
+  })
+})
+
+describe('guardrail failures', () => {
+  test('a long command is shown whole in the approval', async ($, on) => {
+    const state = world(on)
+    const command = `npm install ${'a'.repeat(300)} && rm -rf ~/precious`
+
+    await $.tool.call({ tool: 'Bash', command })
+
+    expect(state.questions[0]).toContain('rm -rf ~/precious')
+  })
+
+  test('a check that fails before the command runs blocks it', async ($, on) => {
+    const state = world(on, { brokenTool: 'git' })
+
+    const ran = await $.tool.call({ tool: 'Bash', command: 'git checkout -- .' })
+
+    expect(ran.deny).toMatch(/safety check itself failed/)
+    expect(state.commands).toEqual([])
   })
 })

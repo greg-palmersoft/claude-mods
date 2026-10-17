@@ -135,3 +135,24 @@ describe('reports', () => {
     expect(finishedSince([], [done])).toEqual([])
   })
 })
+
+describe('guardrails resist rephrasing', () => {
+  test('a branch creation chained to a discarding command still needs the dirty check', async () => {
+    expect(checkBash('git checkout -b x && git checkout -- app/Foo.php', { isWorkingTreeDirty: true })?.rule).toBe('git')
+    expect(checkBash('git checkout -b x; git status', { isWorkingTreeDirty: true })).toBeUndefined()
+  })
+
+  test('global options and spread flags do not hide the subcommand', async () => {
+    expect(checkBash('git -C ../app checkout -- .', { isWorkingTreeDirty: true })?.rule).toBe('git')
+    expect(checkBash('git clean -d -f', { isWorkingTreeDirty: true })?.rule).toBe('git')
+    expect(checkBash('git clean --force', { isWorkingTreeDirty: true })?.rule).toBe('git')
+    expect(checkBash('git clean -n', { isWorkingTreeDirty: true })).toBeUndefined()
+    expect(checkBash('php artisan --env=testing migrate:fresh')?.rule).toBe('database')
+    expect(checkBash('cd app && php artisan db:wipe --force')?.rule).toBe('database')
+  })
+
+  test('path case does not matter on a case-insensitive disk', async () => {
+    expect(checkFile('/app/.ENV')?.rule).toBe('env')
+    expect(checkFile('/app/Package.json')?.rule).toBe('dependencies')
+  })
+})

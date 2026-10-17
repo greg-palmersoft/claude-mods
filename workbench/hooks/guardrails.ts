@@ -10,20 +10,32 @@ export const MAX_TEST_PROCESSES = 6
 const LEGACY_PEER_DEPS = /--legacy-peer-deps\b/
 const DEPENDENCY_CHANGE = /\b(?:npm|pnpm|yarn)\s+(?:install|i|add|uninstall|remove|rm|update|up|upgrade|audit\s+fix)\b|\bcomposer\s+(?:require|remove|update|upgrade|bump)\b/
 const PRODUCTION_BUILD = /\bnpm\s+run\s+build\b|\b(?:npx\s+)?vite\s+build\b/
-const DESTRUCTIVE_DATABASE = /\bartisan\s+(migrate:fresh|migrate:refresh|migrate:reset|db:wipe)\b/
-const WORK_DISCARDING_GIT = /\bgit\s+(?:checkout|switch|restore|reset\s+--hard|clean\s+-\w*f|stash\s+(?:drop|clear))\b/
-const BRANCH_CREATION = /\bgit\s+(?:checkout\s+-[bB]|switch\s+-[cC])\b/
+const DESTRUCTIVE_DATABASE = /\bartisan\b.*?\s(migrate:fresh|migrate:refresh|migrate:reset|db:wipe)\b/
+const WORK_DISCARDING_GIT = /\bgit\b.*?\s(?:checkout|switch|restore|reset\s.*--hard|stash\s+(?:drop|clear))\b/
+const GIT_CLEAN_FORCED = /\bgit\b.*?\sclean\b.*\s(?:-\w*f\w*|--force)\b/
+const BRANCH_CREATION = /\bgit\b.*?\s(?:checkout\s+-[bB]|switch\s+-[cC])\s/
+const SEGMENT_BREAK = /&&|\|\||[;|\n&]/
 const PHP_TEST_RUN = /\b(?:artisan\s+test|vendor\/bin\/(?:pest|phpunit|paratest))\b/
 const TEST_PROCESSES = /--processes[=\s]+(\d+)/
 
-const ENV_FILE = /(?:^|\/)\.env(?:\.[^/]+)?$/
-const ENV_EXAMPLE = /(?:^|\/)\.env\.example$/
-const DEPENDENCY_MANIFEST = /(?:^|\/)(?:composer\.(?:json|lock)|package(?:-lock)?\.json|yarn\.lock|pnpm-lock\.yaml)$/
-const MIGRATION_FILE = /(?:^|\/)database\/migrations\/[^/]+\.php$/
+const ENV_FILE = /(?:^|\/)\.env(?:\.[^/]+)?$/i
+const ENV_EXAMPLE = /(?:^|\/)\.env\.example$/i
+const DEPENDENCY_MANIFEST = /(?:^|\/)(?:composer\.(?:json|lock)|package(?:-lock)?\.json|yarn\.lock|pnpm-lock\.yaml)$/i
+const MIGRATION_FILE = /(?:^|\/)database\/migrations\/[^/]+\.php$/i
+
+/** The commands of a shell line, split at `&&`, `||`, `;`, `|`, `&` and newlines. */
+function segments(command: string): string[] {
+  return command.split(SEGMENT_BREAK).map(segment => ` ${segment.trim()} `)
+}
+
+/** Whether one segment is a git command that can discard uncommitted work. */
+function discardsWork(segment: string): boolean {
+  return GIT_CLEAN_FORCED.test(segment) || (WORK_DISCARDING_GIT.test(segment) && !BRANCH_CREATION.test(segment))
+}
 
 /** Whether the Bash rules need the working tree's state to judge `command`. */
 export function needsDirtyCheck(command: string): boolean {
-  return WORK_DISCARDING_GIT.test(command) && !BRANCH_CREATION.test(command)
+  return segments(command).some(discardsWork)
 }
 
 /** Whether the Bash rules need to know if a PHP test run is already going. */
@@ -50,8 +62,8 @@ export function checkBash(command: string, context: BashContext = {}): Hold | un
     return { rule: 'build', reason: 'This runs a production build; npm run dev is normally running.' }
   }
 
-  const destructive = DESTRUCTIVE_DATABASE.exec(command)
-  if (destructive !== null) {
+  const destructive = segments(command).map(segment => DESTRUCTIVE_DATABASE.exec(segment)).find(match => match !== null)
+  if (destructive !== undefined && destructive !== null) {
     return { rule: 'database', reason: `${destructive[1]} destroys the database's data.` }
   }
 

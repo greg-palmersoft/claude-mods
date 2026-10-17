@@ -28,6 +28,7 @@ const DEPLOY_CHECK_MS = 10 * 60_000
 const DEPLOY_POLL_MS = 30_000
 const DEPLOY_WATCH_MS = 20 * 60_000
 const GUARDRAIL_HISTORY = 20
+const APPROVAL_TEXT_LIMIT = 1500
 const PING_PROMPT = 'Keep-alive ping to refresh the prompt cache. Reply with OK and nothing else.'
 const DEPLOY_FIELDS = '--fields=status,commitHash,commitMessage,startedAt,finishedAt,failureReason'
 
@@ -307,6 +308,13 @@ async function recordGuardrail($: EngineInterface, hold: Hold, outcome: Guardrai
   await update($, guardrails, list => [...list, { at, rule: hold.rule, reason: hold.reason, outcome }].slice(-GUARDRAIL_HISTORY))
 }
 
+/** The command as the approval shows it: whole, or plainly marked where the dialog's limit cuts it. */
+function shownInFull(command: string): string {
+  return command.length <= APPROVAL_TEXT_LIMIT
+    ? command
+    : `${command.slice(0, APPROVAL_TEXT_LIMIT)} … [${command.length - APPROVAL_TEXT_LIMIT} more characters not shown]`
+}
+
 /** Asks the person about a held action; anything but an explicit allow blocks it. */
 async function isAllowed($: EngineInterface, hold: Hold, subject: string): Promise<boolean> {
   if (hold.isHardBlock === true) {
@@ -334,6 +342,29 @@ async function isAllowed($: EngineInterface, hold: Hold, subject: string): Promi
 
 function refusal(hold: Hold): { deny: string } {
   return { deny: `Workbench guardrail: ${hold.reason}${hold.isHardBlock === true ? '' : ' The person did not allow it.'}` }
+}
+
+/** Bookkeeping once a command has run: never part of deciding whether it runs. */
+async function afterCommand($: EngineInterface, command: string, ran: ToolCallResult, isForegroundTestRun: boolean): Promise<void> {
+  const hasFailed = ran.deny !== undefined || ran.isError === true
+
+  if (isForegroundTestRun) {
+    await refreshTestRun($, true, hasFailed)
+  }
+
+  if (hasFailed) {
+    return
+  }
+
+  if (changesDependencies(command)) {
+    inBackground($, checkDependencies($))
+  }
+
+  if (/\bgit\s+push\b/.test(command)) {
+    const now = await $.clock.now()
+    await update($, deploys, current => ({ ...current, watchUntil: now + DEPLOY_WATCH_MS }))
+    inBackground($, checkDeploys($))
+  }
 }
 
 /* The sidebar and the band */
@@ -413,7 +444,7 @@ export const register: Register = on => {
       isPhpTestRunActive: isPhpTestRun(e.command) ? await phpTestRunIsActive($) : undefined,
     })
 
-    if (hold !== undefined && !(await isAllowed($, hold, `\`${e.command.slice(0, 120)}\``))) {
+    if (hold !== undefined && !(await isAllowed($, hold, `\`${shownInFull(e.command)}\``))) {
       return refusal(hold)
     }
 
@@ -428,28 +459,17 @@ export const register: Register = on => {
     }
 
     const ran: ToolCallResult = await next({ ...e, command })
-
-    if (runner !== undefined && e.run_in_background !== true) {
-      await refreshTestRun($, true, ran.deny !== undefined || ran.isError === true)
-    }
-
-    if (ran.deny === undefined && ran.isError !== true) {
-      if (changesDependencies(e.command)) {
-        inBackground($, checkDependencies($))
-      }
-
-      if (/\bgit\s+push\b/.test(e.command)) {
-        const now = await $.clock.now()
-        await update($, deploys, current => ({ ...current, watchUntil: now + DEPLOY_WATCH_MS }))
-        inBackground($, checkDeploys($))
-      }
-    }
+    inBackground($, afterCommand($, e.command, ran, runner !== undefined && e.run_in_background !== true))
 
     return ran
   }).catch(($, e, next) => {
-    $.ui.log('workbench: a guardrail check failed, so this command ran unchecked.')
+    if (next.called) {
+      return next(e)
+    }
 
-    return next(e)
+    $.ui.log(`workbench: a guardrail check failed (${next.error.message ?? next.error.kind}), so the command was not run.`)
+
+    return { deny: 'Workbench guardrail: the safety check itself failed, so this command was not run. Tell the person; they can run it themselves.' }
   })
 
   for (const tool of ['Edit', 'Write', 'NotebookEdit'] as const) {
@@ -463,9 +483,13 @@ export const register: Register = on => {
 
       return next(e)
     }).catch(($, e, next) => {
-      $.ui.log('workbench: a guardrail check failed, so this edit ran unchecked.')
+      if (next.called) {
+        return next(e)
+      }
 
-      return next(e)
+      $.ui.log(`workbench: a guardrail check failed (${next.error.message ?? next.error.kind}), so the edit was not made.`)
+
+      return { deny: 'Workbench guardrail: the safety check itself failed, so this edit was not made. Tell the person; they can make it themselves.' }
     })
   }
 
