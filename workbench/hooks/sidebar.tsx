@@ -184,7 +184,13 @@ function DependenciesSection({ ui, data }: { ui: Ui; data: WorkbenchData }) {
       {report.npm !== undefined && <PackageRows ui={ui} name="npm" lines={report.npm} isFirst={report.composer === undefined} />}
       {report.errors.map((error, index) => <Text key={`dependency-error-${index}`} color="error" wrap="wrap">{error}</Text>)}
       <Text key="dependencies-checked" dimColor>
-        {report.isChecking ? 'Checking…' : report.checkedAt !== undefined ? `Checked ${clockTime(report.checkedAt)}` : 'Not checked yet'}
+        {report.isChecking
+          ? 'Checking…'
+          : report.checkedAt === undefined
+            ? 'Not checked yet'
+            : report.composer === undefined && report.npm === undefined && report.errors.length === 0
+              ? 'No composer.lock or package-lock.json here'
+              : `Checked ${clockTime(report.checkedAt)}`}
       </Text>
     </Box>
   )
@@ -214,17 +220,19 @@ function DeploysSection({ ui, data }: { ui: Ui; data: WorkbenchData }) {
       })}
       {report.error !== undefined && <Text key="deploys-error" color="error" wrap="wrap">{report.error}</Text>}
       <Text key="deploys-checked" dimColor>
-        {isWatching ? 'Watching after a push' : report.checkedAt !== undefined ? `Checked ${clockTime(report.checkedAt)}` : 'Not checked yet'}
+        {report.checkedAt === undefined
+          ? 'Not checked yet'
+          : !report.isAvailable
+            ? 'No Laravel Cloud project here (.cloud/config.json)'
+            : isWatching ? 'Watching after a push' : `Checked ${clockTime(report.checkedAt)}`}
       </Text>
     </Box>
   )
 }
 
-/** The sidebar: one section per concern, each hidden where the project has nothing to show. */
+/** The sidebar: one section per concern, each always shown with what it has checked so far. */
 export function Sidebar({ ui, data, actions }: { ui: Ui; data: WorkbenchData; actions: SidebarActions }) {
   const { Box, Button } = ui
-  const hasDependencies = data.dependencies.composer !== undefined || data.dependencies.npm !== undefined
-    || data.dependencies.errors.length > 0 || data.dependencies.isChecking
 
   return (
     <Box flexDirection="column">
@@ -232,18 +240,14 @@ export function Sidebar({ ui, data, actions }: { ui: Ui; data: WorkbenchData; ac
       <UsageSection ui={ui} data={data} />
       <Heading ui={ui} title="Tests" />
       <TestsSection ui={ui} data={data} />
-      {hasDependencies && (
-        <Heading ui={ui} title="Dependencies">
-          <Button key="refresh-dependencies" label="Refresh" onPress={actions.refreshDependencies} />
-        </Heading>
-      )}
-      {hasDependencies && <DependenciesSection ui={ui} data={data} />}
-      {data.deploys.isAvailable && (
-        <Heading ui={ui} title="Deploys">
-          <Button key="refresh-deploys" label="Check" onPress={actions.refreshDeploys} />
-        </Heading>
-      )}
-      {data.deploys.isAvailable && <DeploysSection ui={ui} data={data} />}
+      <Heading ui={ui} title="Dependencies">
+        <Button key="refresh-dependencies" label="Refresh" onPress={actions.refreshDependencies} />
+      </Heading>
+      <DependenciesSection ui={ui} data={data} />
+      <Heading ui={ui} title="Deploys">
+        <Button key="refresh-deploys" label="Check" onPress={actions.refreshDeploys} />
+      </Heading>
+      <DeploysSection ui={ui} data={data} />
     </Box>
   )
 }

@@ -173,6 +173,9 @@ async function checkDependencies($: EngineInterface): Promise<void> {
   const [hasComposer, hasNpm] = await Promise.all([$.fs.exists('composer.lock'), $.fs.exists('package-lock.json')])
 
   if (!hasComposer && !hasNpm) {
+    const checkedAt = await $.clock.now()
+    await update($, dependencies, () => ({ isChecking: false, checkedAt, errors: [] }))
+
     return
   }
 
@@ -241,7 +244,8 @@ async function checkDeploys($: EngineInterface): Promise<void> {
   }
 
   if (!(await $.fs.exists('.cloud/config.json'))) {
-    await update($, deploys, current => ({ ...current, isAvailable: false }))
+    const checkedAt = await $.clock.now()
+    await update($, deploys, current => ({ ...current, isAvailable: false, checkedAt, deployments: [], error: undefined }))
 
     return
   }

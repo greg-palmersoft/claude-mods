@@ -15,8 +15,10 @@ const PEST_OUTPUT = '  ..⨯.\n\n  FAILED  Tests\\Feature\\InvoiceTest > it soft
 
 type World = { commands: string[]; files: Record<string, string>; toasts: string[]; settle: () => Promise<void> }
 
-/** The engine beneath the plugin: a project with a lock file each, on Laravel Cloud, and a clean tree. */
-function world(on: On): World {
+const PROJECT_FILES = ['/composer.lock', '/package-lock.json', '/.cloud/config.json']
+
+/** The engine beneath the plugin: by default a project with a lock file each, on Laravel Cloud, and a clean tree. */
+function world(on: On, projectFiles: string[] = PROJECT_FILES): World {
   const clock = mock.clock(on, { now: NOW })
   const state: World = { commands: [], files: {}, toasts: [], settle: () => clock.settle() }
 
@@ -30,7 +32,7 @@ function world(on: On): World {
     return { value: undefined }
   })
   on('fs.exists', (_$, e) => ({
-    value: ['/composer.lock', '/package-lock.json', '/.cloud/config.json'].some(name => e.path.endsWith(name)) || e.path in state.files,
+    value: projectFiles.some(name => e.path.endsWith(name)) || e.path in state.files,
   }))
   on('fs.read', (_$, e) => ({ value: state.files[e.path] ?? '' }))
   on('process.run', (_$, e) => {
@@ -133,6 +135,34 @@ describe('the sidebar', () => {
       expect(await ui.find({ type: 'Text', text: /3f4febc9/ })).toBeDefined()
       await ui.unmount()
     }
+  })
+
+  test('shows the dependencies and deploys sections, with their buttons, before anything is checked', async ($, on) => {
+    world(on)
+
+    const ui = await $.ui.mount({ plugin: 'workbench', surface: 'terminal', ...PANE })
+
+    expect(await ui.find({ type: 'Text', text: 'Dependencies' })).toBeDefined()
+    expect(await ui.find({ key: 'refresh-dependencies' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'Deploys' })).toBeDefined()
+    expect(await ui.find({ key: 'refresh-deploys' })).toBeDefined()
+    expect(await ui.findAll({ type: 'Text', text: 'Not checked yet' })).toHaveLength(2)
+    await ui.unmount()
+  })
+
+  test('says so when the project has no lock file or Laravel Cloud project', async ($, on) => {
+    const state = world(on, [])
+
+    await $.session.start({ cwd: '/app', surface: 'terminal', isInteractive: true })
+    await state.settle()
+
+    const ui = await $.ui.mount({ plugin: 'workbench', surface: 'terminal', ...PANE })
+
+    expect(await ui.find({ type: 'Text', text: 'No composer.lock or package-lock.json here' })).toBeDefined()
+    expect(await ui.find({ key: 'refresh-dependencies' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'No Laravel Cloud project here (.cloud/config.json)' })).toBeDefined()
+    expect(await ui.find({ key: 'refresh-deploys' })).toBeDefined()
+    await ui.unmount()
   })
 
   test('flags production security updates once each, and not dev ones', async ($, on) => {
