@@ -13,31 +13,37 @@ const CONTEXT = { tokens: 150_000, window: 200_000, percent: 75 }
 
 const PEST_OUTPUT = '  ..⨯.\n\n  FAILED  Tests\\Feature\\InvoiceTest > it soft deletes   ExpectationFailedException\n\n  Tests:    1 failed, 3 passed (9 assertions)\n'
 
-type World = { commands: string[]; files: Record<string, string>; settle: () => Promise<void> }
+type World = { commands: string[]; files: Record<string, string>; toasts: string[]; settle: () => Promise<void> }
 
 /** The engine beneath the plugin: a project with a lock file each, on Laravel Cloud, and a clean tree. */
 function world(on: On): World {
   const clock = mock.clock(on, { now: NOW })
-  const state: World = { commands: [], files: {}, settle: () => clock.settle() }
+  const state: World = { commands: [], files: {}, toasts: [], settle: () => clock.settle() }
 
   on('session.usage', () => ({ value: { startedAt: NOW, context: { ...CONTEXT }, rateLimits: [] } }))
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('command.register', () => ({ value: undefined }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.toast', (_$, e) => {
+    state.toasts.push(e.text)
+
+    return { value: undefined }
+  })
   on('fs.exists', (_$, e) => ({
     value: ['/composer.lock', '/package-lock.json', '/.cloud/config.json'].some(name => e.path.endsWith(name)) || e.path in state.files,
   }))
   on('fs.read', (_$, e) => ({ value: state.files[e.path] ?? '' }))
   on('process.run', (_$, e) => {
     const line = e.argv.join(' ')
+    const isProduction = line.includes('--no-dev') || line.includes('--omit=dev')
     const stdout = line.startsWith('composer audit')
-      ? JSON.stringify({ advisories: { 'laravel/framework': [{}] } })
+      ? JSON.stringify({ advisories: isProduction ? { 'laravel/framework': [{}] } : { 'laravel/framework': [{}], 'phpunit/phpunit': [{}] } })
       : line.startsWith('composer outdated')
-        ? JSON.stringify({ locked: [{ name: 'laravel/framework' }, { name: 'pestphp/pest' }] })
+        ? JSON.stringify({ locked: [{ name: 'laravel/framework' }, { name: 'guzzlehttp/guzzle' }, ...(isProduction ? [] : [{ name: 'pestphp/pest' }])] })
         : line.startsWith('npm audit')
-          ? JSON.stringify({ vulnerabilities: { vite: {} }, metadata: { vulnerabilities: { total: 1 } } })
+          ? JSON.stringify({ vulnerabilities: isProduction ? {} : { vite: {} } })
           : line.startsWith('npm outdated')
-            ? JSON.stringify({ vite: {}, vue: {}, pinia: {} })
+            ? JSON.stringify({ vite: { type: 'devDependencies' }, tailwindcss: { type: 'devDependencies' }, vue: { type: 'dependencies' }, pinia: { type: 'dependencies' } })
             : line.startsWith('cloud environment:list')
               ? JSON.stringify([{ id: 'env-1', name: 'staging' }])
               : line.startsWith('cloud deployment:list')
@@ -115,14 +121,30 @@ describe('the sidebar', () => {
 
       expect(await ui.find({ type: 'Text', text: /^ctx .*75%$/ })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: 'Dependencies' })).toBeDefined()
-      expect(await ui.find({ key: 'composer' })).toBeDefined()
-      expect((await ui.findAll({ type: 'Text', text: '1 security' })).length).toBe(2)
-      expect(await ui.find({ type: 'Text', text: '1 other' })).toBeDefined()
+      expect(await ui.find({ key: 'production-security' })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: 'composer laravel/framework' })).toBeDefined()
+      expect(await ui.find({ key: 'composer-prod' })).toBeDefined()
+      expect(await ui.find({ key: 'composer-dev' })).toBeDefined()
+      expect(await ui.find({ key: 'npm-prod' })).toBeDefined()
+      expect((await ui.findAll({ type: 'Text', text: '1 security' })).length).toBe(3)
+      expect((await ui.findAll({ type: 'Text', text: '1 other' })).length).toBe(3)
       expect(await ui.find({ type: 'Text', text: '2 other' })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: /✓ staging/ })).toBeDefined()
       expect(await ui.find({ type: 'Text', text: /3f4febc9/ })).toBeDefined()
       await ui.unmount()
     }
+  })
+
+  test('flags production security updates once each, and not dev ones', async ($, on) => {
+    const state = world(on)
+
+    await $.session.start({ cwd: '/app', surface: 'terminal', isInteractive: true })
+    await state.settle()
+    expect(state.toasts.filter(text => text.includes('Production security'))).toEqual(['⚠ Production security update: composer laravel/framework'])
+
+    await $.command.run({ command: 'workbench', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
+    await state.settle()
+    expect(state.toasts.filter(text => text.includes('Production security')).length).toBe(1)
   })
 })
 
@@ -146,7 +168,8 @@ describe('the band', () => {
     await state.settle()
 
     const band = await $.ui.mount({ plugin: 'workbench', surface: 'terminal', ...BAND })
-    expect(await band.find({ type: 'Text', text: 'deps 2⚠' })).toBeDefined()
+    expect(await band.find({ type: 'Text', text: 'prod deps 1⚠' })).toBeDefined()
+    expect(await band.find({ type: 'Text', text: 'dev deps 2⚠' })).toBeDefined()
     expect(await band.find({ key: 'sidebar' })).toBeDefined()
     await band.unmount()
 

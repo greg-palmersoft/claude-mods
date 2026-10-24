@@ -1,8 +1,9 @@
-import type { DeployState, Deployment, PackageCounts } from '../types'
+import type { DeployState, Deployment, PackageCounts, PackageLines } from '../types'
 
 type ComposerAudit = { advisories?: Record<string, unknown> | unknown[] }
 type ComposerOutdated = { locked?: Array<{ name: string }>; installed?: Array<{ name: string }> }
-type NpmAudit = { metadata?: { vulnerabilities?: { total?: number } }; vulnerabilities?: Record<string, unknown> }
+type NpmAudit = { vulnerabilities?: Record<string, unknown> }
+type NpmOutdated = Record<string, { type?: string }>
 
 export type CloudDeployment = {
   status?: string
@@ -20,26 +21,57 @@ export function changesDependencies(command: string): boolean {
   return DEPENDENCY_CHANGE.test(command)
 }
 
-/** Reads `composer audit --format=json` and `composer outdated --direct --format=json`. */
-export function composerCounts(auditJson: string, outdatedJson: string): PackageCounts {
-  const audit = parseJson<ComposerAudit>(auditJson, 'composer audit')
-  const outdated = parseJson<ComposerOutdated>(outdatedJson, 'composer outdated')
-  const vulnerable = Array.isArray(audit.advisories) ? [] : Object.keys(audit.advisories ?? {})
-  const updates = outdated.locked ?? outdated.installed ?? []
+/**
+ * Reads `composer audit --format=json` and `composer outdated --direct --format=json`, each run once
+ * whole and once with `--no-dev`: what the `--no-dev` run reports ships to production, the rest is dev.
+ */
+export function composerCounts(audit: { all: string; production: string }, outdated: { all: string; production: string }): PackageLines {
+  const advisories = (json: string): string[] => {
+    const parsed = parseJson<ComposerAudit>(json, 'composer audit').advisories
 
-  return { security: vulnerable.length, other: updates.filter(item => !vulnerable.includes(item.name)).length }
+    return Array.isArray(parsed) ? [] : Object.keys(parsed ?? {})
+  }
+  const updates = (json: string): string[] => {
+    const parsed = parseJson<ComposerOutdated>(json, 'composer outdated')
+
+    return (parsed.locked ?? parsed.installed ?? []).map(item => item.name)
+  }
+  const productionUpdates = updates(outdated.production)
+
+  return splitLines(
+    { all: advisories(audit.all), production: advisories(audit.production) },
+    updates(outdated.all).map(name => ({ name, isDev: !productionUpdates.includes(name) })),
+  )
 }
 
-/** Reads `npm audit --json` and `npm outdated --json`; the latter prints nothing when all is current. */
-export function npmCounts(auditJson: string, outdatedJson: string): PackageCounts {
-  const audit = parseJson<NpmAudit>(auditJson, 'npm audit')
-  const outdated = outdatedJson.trim() === '' ? {} : parseJson<Record<string, unknown>>(outdatedJson, 'npm outdated')
-  const vulnerable = Object.keys(audit.vulnerabilities ?? {})
+/**
+ * Reads `npm audit --json`, run once whole and once with `--omit=dev`, and `npm outdated --json --long`,
+ * whose `type` names the section of package.json each package is in. The latter prints nothing when all is current.
+ */
+export function npmCounts(audit: { all: string; production: string }, outdatedJson: string): PackageLines {
+  const advisories = (json: string): string[] => Object.keys(parseJson<NpmAudit>(json, 'npm audit').vulnerabilities ?? {})
+  const outdated = outdatedJson.trim() === '' ? {} : parseJson<NpmOutdated>(outdatedJson, 'npm outdated')
 
-  return {
-    security: audit.metadata?.vulnerabilities?.total ?? vulnerable.length,
-    other: Object.keys(outdated).filter(name => !vulnerable.includes(name)).length,
-  }
+  return splitLines(
+    { all: advisories(audit.all), production: advisories(audit.production) },
+    Object.entries(outdated).map(([name, item]) => ({ name, isDev: item.type === 'devDependencies' })),
+  )
+}
+
+/** Splits advised and outdated packages into production and dev, counting an advised package as a security update only. */
+function splitLines(advised: { all: string[]; production: string[] }, outdated: Array<{ name: string; isDev: boolean }>): PackageLines {
+  const devAdvisories = advised.all.filter(name => !advised.production.includes(name))
+  const others = (isDev: boolean): number => outdated
+    .filter(item => item.isDev === isDev && !advised.all.includes(item.name))
+    .length
+  const line = (advisories: string[], isDev: boolean): PackageCounts => ({ security: advisories.length, other: others(isDev), advisories })
+
+  return { production: line(advised.production, false), dev: line(devAdvisories, true) }
+}
+
+/** Production packages with an advisory, as `composer laravel/framework`, across both package managers. */
+export function productionAdvisories(lines: { composer?: PackageLines; npm?: PackageLines }): string[] {
+  return (['composer', 'npm'] as const).flatMap(manager => (lines[manager]?.production.advisories ?? []).map(name => `${manager} ${name}`))
 }
 
 /** The state of a Laravel Cloud deployment, from its status and whether it finished. */

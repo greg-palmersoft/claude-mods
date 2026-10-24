@@ -33,14 +33,17 @@ export type TestRun = {
   warnings: string[]
 }
 
-/** Packages with a security advisory, and outdated packages that have none. */
-export type PackageCounts = { security: number; other: number }
+/** Packages with a security advisory (named in `advisories`), and outdated packages that have none. */
+export type PackageCounts = { security: number; other: number; advisories: string[] }
+
+/** One package manager's counts, split by whether the packages ship to production. */
+export type PackageLines = { production: PackageCounts; dev: PackageCounts }
 
 export type DependencyReport = {
   isChecking: boolean
   checkedAt?: number
-  composer?: PackageCounts
-  npm?: PackageCounts
+  composer?: PackageLines
+  npm?: PackageLines
   errors: string[]
 }
 
@@ -71,7 +74,7 @@ declare module 'claude-code' {
       cache: CacheState
       tick: number
       testRun: TestRun | null
-      dependencies: DependencyReport
+      dependencies: Shaped<DependencyReport>
       deploys: DeployReport
       isBandHidden: boolean
     }

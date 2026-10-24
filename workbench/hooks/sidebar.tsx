@@ -1,7 +1,7 @@
 import type { EngineInterface } from 'claude-code'
 
-import type { CacheState, DependencyReport, DeployReport, Deployment, PackageCounts, TestRun, UsageSnapshot } from '../types'
-import { ago } from './reports'
+import type { CacheState, DependencyReport, DeployReport, Deployment, PackageCounts, PackageLines, TestRun, UsageSnapshot } from '../types'
+import { ago, productionAdvisories } from './reports'
 import { LIMIT_LABELS, bar, cacheAge, compactAdvice, formatTokens, meterColour, orderLimits, untilReset } from './usage'
 
 type Ui = ReturnType<EngineInterface['ui']['resolve']>
@@ -131,15 +131,29 @@ function TestsSection({ ui, data }: { ui: Ui; data: WorkbenchData }) {
   )
 }
 
-function PackageRow({ ui, name, counts }: { ui: Ui; name: string; counts: PackageCounts }) {
+function PackageRow({ ui, name, line, counts, isDev }: { ui: Ui; name: string; line: string; counts: PackageCounts; isDev: boolean }) {
   const { Box, Text } = ui
 
   return (
-    <Box key={name}>
-      <Text>{name.padEnd(9)}</Text>
-      <Text color={counts.security > 0 ? 'error' : 'success'}>{counts.security} security</Text>
+    <Box key={`${name}-${line}`}>
+      <Text>{(isDev ? '' : name).padEnd(9)}</Text>
+      <Text dimColor>{line.padEnd(5)}</Text>
+      <Text color={counts.security === 0 ? 'success' : isDev ? 'warning' : 'error'} bold={counts.security > 0 && !isDev}>
+        {counts.security} security
+      </Text>
       <Text dimColor> · </Text>
       <Text color={counts.other > 0 ? 'warning' : 'success'}>{counts.other} other</Text>
+    </Box>
+  )
+}
+
+function PackageRows({ ui, name, lines }: { ui: Ui; name: string; lines: PackageLines }) {
+  const { Box } = ui
+
+  return (
+    <Box key={name} flexDirection="column">
+      <PackageRow ui={ui} name={name} line="prod" counts={lines.production} isDev={false} />
+      <PackageRow ui={ui} name={name} line="dev" counts={lines.dev} isDev />
     </Box>
   )
 }
@@ -147,11 +161,18 @@ function PackageRow({ ui, name, counts }: { ui: Ui; name: string; counts: Packag
 function DependenciesSection({ ui, data }: { ui: Ui; data: WorkbenchData }) {
   const { Box, Text } = ui
   const report = data.dependencies
+  const advisories = productionAdvisories(report)
 
   return (
     <Box key="dependencies" flexDirection="column">
-      {report.composer !== undefined && <PackageRow ui={ui} name="composer" counts={report.composer} />}
-      {report.npm !== undefined && <PackageRow ui={ui} name="npm" counts={report.npm} />}
+      {advisories.length > 0 && (
+        <Box key="production-security" flexDirection="column" borderStyle="bold" borderColor="error" paddingX={1}>
+          <Text key="production-security-title" color="error" bold>⚠ PRODUCTION SECURITY UPDATES</Text>
+          {advisories.map(advisory => <Text key={`advisory-${advisory}`} color="error" wrap="truncate">{advisory}</Text>)}
+        </Box>
+      )}
+      {report.composer !== undefined && <PackageRows ui={ui} name="composer" lines={report.composer} />}
+      {report.npm !== undefined && <PackageRows ui={ui} name="npm" lines={report.npm} />}
       {report.errors.map((error, index) => <Text key={`dependency-error-${index}`} color="error" wrap="wrap">{error}</Text>)}
       <Text key="dependencies-checked" dimColor>
         {report.isChecking ? 'Checking…' : report.checkedAt !== undefined ? `Checked ${clockTime(report.checkedAt)}` : 'Not checked yet'}
@@ -232,9 +253,14 @@ export function bandChips(data: WorkbenchData): Array<{ key: string; text: strin
     })
   }
 
-  const security = (data.dependencies.composer?.security ?? 0) + (data.dependencies.npm?.security ?? 0)
-  if (security > 0) {
-    chips.push({ key: 'chip-dependencies', text: `deps ${security}⚠`, tone: 'error' })
+  const { composer, npm } = data.dependencies
+  const productionSecurity = (composer?.production.security ?? 0) + (npm?.production.security ?? 0)
+  const devSecurity = (composer?.dev.security ?? 0) + (npm?.dev.security ?? 0)
+  if (productionSecurity > 0) {
+    chips.push({ key: 'chip-production-dependencies', text: `prod deps ${productionSecurity}⚠`, tone: 'error' })
+  }
+  if (devSecurity > 0) {
+    chips.push({ key: 'chip-dev-dependencies', text: `dev deps ${devSecurity}⚠`, tone: 'warning' })
   }
 
   const deploy = data.deploys.deployments.find(one => one.state === 'running')

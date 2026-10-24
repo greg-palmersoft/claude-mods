@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { changesDependencies, composerCounts, deployState, finishedSince, latestDeployment, npmCounts } from '../hooks/reports'
+import { changesDependencies, composerCounts, deployState, finishedSince, latestDeployment, npmCounts, productionAdvisories } from '../hooks/reports'
 import { detectRunner, savedOutputPath, tallyOutput, withSavedOutput } from '../hooks/testRuns'
 
 const PEST_PASSED = '\n  \u001b[90;1m.\u001b[39;22m\u001b[90;1m.\u001b[39;22m.\n\n  \u001b[90mTests:\u001b[39m    \u001b[32;1m990 passed\u001b[39;22m (4002 assertions)\n  Duration: 42.47s\n'
@@ -60,21 +60,57 @@ describe('test runs', () => {
 })
 
 describe('reports', () => {
-  test('count composer packages with advisories apart from other updates', async () => {
-    const audit = JSON.stringify({ advisories: { 'laravel/framework': [{}], 'symfony/yaml': [{}] }, abandoned: [] })
-    const outdated = JSON.stringify({ locked: [{ name: 'laravel/framework' }, { name: 'altcha-org/altcha' }, { name: 'pestphp/pest' }] })
+  test('split composer packages into production and dev, advisories apart from other updates', async () => {
+    const audit = {
+      all: JSON.stringify({ advisories: { 'laravel/framework': [{}], 'phpunit/phpunit': [{}] }, abandoned: [] }),
+      production: JSON.stringify({ advisories: { 'laravel/framework': [{}] }, abandoned: [] }),
+    }
+    const outdated = {
+      all: JSON.stringify({ locked: [{ name: 'laravel/framework' }, { name: 'altcha-org/altcha' }, { name: 'pestphp/pest' }, { name: 'phpunit/phpunit' }] }),
+      production: JSON.stringify({ locked: [{ name: 'laravel/framework' }, { name: 'altcha-org/altcha' }] }),
+    }
 
-    expect(composerCounts(audit, outdated)).toEqual({ security: 2, other: 2 })
-    expect(composerCounts(JSON.stringify({ advisories: [] }), JSON.stringify({ locked: [] }))).toEqual({ security: 0, other: 0 })
+    expect(composerCounts(audit, outdated)).toEqual({
+      production: { security: 1, other: 1, advisories: ['laravel/framework'] },
+      dev: { security: 1, other: 1, advisories: ['phpunit/phpunit'] },
+    })
+
+    const none = { all: JSON.stringify({ advisories: [] }), production: JSON.stringify({ advisories: [] }) }
+    const current = { all: JSON.stringify({ locked: [] }), production: JSON.stringify({ locked: [] }) }
+    expect(composerCounts(none, current)).toEqual({
+      production: { security: 0, other: 0, advisories: [] },
+      dev: { security: 0, other: 0, advisories: [] },
+    })
   })
 
-  test('count npm packages with vulnerabilities apart from other updates', async () => {
-    const audit = JSON.stringify({ vulnerabilities: { vite: {}, axios: {} }, metadata: { vulnerabilities: { total: 2 } } })
-    const outdated = JSON.stringify({ vite: {}, vue: {}, pinia: {} })
+  test('split npm packages into production and dev by their package.json section', async () => {
+    const audit = { all: JSON.stringify({ vulnerabilities: { vite: {}, axios: {} } }), production: JSON.stringify({ vulnerabilities: { axios: {} } }) }
+    const outdated = JSON.stringify({
+      vite: { type: 'devDependencies' },
+      tailwindcss: { type: 'devDependencies' },
+      axios: { type: 'dependencies' },
+      vue: { type: 'dependencies' },
+      pinia: { type: 'dependencies' },
+    })
 
-    expect(npmCounts(audit, outdated)).toEqual({ security: 2, other: 2 })
-    expect(npmCounts(JSON.stringify({ vulnerabilities: {}, metadata: { vulnerabilities: { total: 0 } } }), '')).toEqual({ security: 0, other: 0 })
-    expect(() => npmCounts('npm ERR!', '')).toThrow(/did not return JSON/)
+    expect(npmCounts(audit, outdated)).toEqual({
+      production: { security: 1, other: 2, advisories: ['axios'] },
+      dev: { security: 1, other: 1, advisories: ['vite'] },
+    })
+
+    const none = { all: JSON.stringify({ vulnerabilities: {} }), production: JSON.stringify({ vulnerabilities: {} }) }
+    expect(npmCounts(none, '')).toEqual({ production: { security: 0, other: 0, advisories: [] }, dev: { security: 0, other: 0, advisories: [] } })
+    expect(() => npmCounts({ all: 'npm ERR!', production: '{}' }, '')).toThrow(/did not return JSON/)
+  })
+
+  test('name the production packages with advisories across both managers', async () => {
+    const clean = { security: 0, other: 0, advisories: [] }
+
+    expect(productionAdvisories({
+      composer: { production: { security: 1, other: 0, advisories: ['laravel/framework'] }, dev: { security: 1, other: 0, advisories: ['phpunit/phpunit'] } },
+      npm: { production: { security: 1, other: 0, advisories: ['axios'] }, dev: clean },
+    })).toEqual(['composer laravel/framework', 'npm axios'])
+    expect(productionAdvisories({})).toEqual([])
   })
 
   test('read Laravel Cloud deployment states', async () => {

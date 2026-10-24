@@ -1,8 +1,8 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionContextUsage, SessionRateLimit, ToolCallResult } from 'claude-code'
 
-import type { CacheState, DependencyReport, DeployReport, Deployment, PackageCounts, TestRun, TestRunner, UsageSnapshot } from '../types'
-import { changesDependencies, composerCounts, finishedSince, latestDeployment, npmCounts } from './reports'
+import type { CacheState, DependencyReport, DeployReport, Deployment, PackageLines, TestRun, TestRunner, UsageSnapshot } from '../types'
+import { changesDependencies, composerCounts, finishedSince, latestDeployment, npmCounts, productionAdvisories } from './reports'
 import { Sidebar, bandChips } from './sidebar'
 import type { WorkbenchData } from './sidebar'
 import { detectRunner, outputPathFor, savedOutputPath, tallyOutput, withSavedOutput } from './testRuns'
@@ -12,7 +12,10 @@ const snapshot = atom({ plugin: 'workbench', key: 'snapshot' } as const, null)
 const cache = atom({ plugin: 'workbench', key: 'cache' } as const, { idlePings: 0 } as CacheState)
 const tick = atom({ plugin: 'workbench', key: 'tick' } as const, 0)
 const testRun = atom({ plugin: 'workbench', key: 'testRun' } as const, null as TestRun | null)
-const dependencies = atom({ plugin: 'workbench', key: 'dependencies' } as const, { isChecking: false, errors: [] } as DependencyReport)
+// Change the tag when the report's fields change: it declines what an earlier version stored.
+const dependencies = atom({ plugin: 'workbench', key: 'dependencies' } as const, { isChecking: false, errors: [] } as DependencyReport, {
+  shape: 'dependencies-2',
+})
 const deploys = atom({ plugin: 'workbench', key: 'deploys' } as const, { isAvailable: false, deployments: [] } as DeployReport)
 const isBandHidden = atom({ plugin: 'workbench', key: 'isBandHidden' } as const, false)
 
@@ -173,18 +176,24 @@ async function checkDependencies($: EngineInterface): Promise<void> {
     return
   }
 
+  const previous = await read($, dependencies)
   await update($, dependencies, current => ({ ...current, isChecking: true }))
   const errors: string[] = []
-  let composer: PackageCounts | undefined
-  let npm: PackageCounts | undefined
+  let composer: PackageLines | undefined
+  let npm: PackageLines | undefined
 
   if (hasComposer) {
     try {
-      const [audit, outdated] = await Promise.all([
+      const [audit, productionAudit, outdated, productionOutdated] = await Promise.all([
         run($, ['composer', 'audit', '--format=json', '--locked', '--no-interaction']),
+        run($, ['composer', 'audit', '--format=json', '--locked', '--no-dev', '--no-interaction']),
         run($, ['composer', 'outdated', '--direct', '--locked', '--format=json', '--no-interaction']),
+        run($, ['composer', 'outdated', '--direct', '--locked', '--no-dev', '--format=json', '--no-interaction']),
       ])
-      composer = composerCounts(audit.stdout, outdated.stdout)
+      composer = composerCounts(
+        { all: audit.stdout, production: productionAudit.stdout },
+        { all: outdated.stdout, production: productionOutdated.stdout },
+      )
     } catch (error) {
       errors.push(`composer: ${messageOf(error)}`)
     }
@@ -192,8 +201,12 @@ async function checkDependencies($: EngineInterface): Promise<void> {
 
   if (hasNpm) {
     try {
-      const [audit, outdated] = await Promise.all([run($, ['npm', 'audit', '--json']), run($, ['npm', 'outdated', '--json'])])
-      npm = npmCounts(audit.stdout, outdated.stdout)
+      const [audit, productionAudit, outdated] = await Promise.all([
+        run($, ['npm', 'audit', '--json']),
+        run($, ['npm', 'audit', '--omit=dev', '--json']),
+        run($, ['npm', 'outdated', '--json', '--long']),
+      ])
+      npm = npmCounts({ all: audit.stdout, production: productionAudit.stdout }, outdated.stdout)
     } catch (error) {
       errors.push(`npm: ${messageOf(error)}`)
     }
@@ -201,6 +214,12 @@ async function checkDependencies($: EngineInterface): Promise<void> {
 
   const checkedAt = await $.clock.now()
   await update($, dependencies, () => ({ isChecking: false, checkedAt, composer, npm, errors }))
+
+  const seen = productionAdvisories(previous)
+  const raised = productionAdvisories({ composer, npm }).filter(name => !seen.includes(name))
+  if (raised.length > 0) {
+    $.ui.toast(`⚠ Production security update${raised.length === 1 ? '' : 's'}: ${raised.join(', ')}`, { timeoutMs: 15_000 })
+  }
 }
 
 /* Laravel Cloud deploys */
