@@ -131,29 +131,38 @@ function TestsSection({ ui, data }: { ui: Ui; data: WorkbenchData }) {
   )
 }
 
-function PackageRow({ ui, name, line, counts, isDev }: { ui: Ui; name: string; line: string; counts: PackageCounts; isDev: boolean }) {
+const LINE_LABELS = {
+  prod: { text: 'Prod', colour: 'suggestion' },
+  dev: { text: 'Dev', colour: 'merged' },
+} as const
+
+const MANAGER_LABELS: Record<'composer' | 'npm', string> = { composer: 'Composer', npm: 'npm' }
+
+function PackageRow({ ui, name, line, counts }: { ui: Ui; name: string; line: 'prod' | 'dev'; counts: PackageCounts }) {
   const { Box, Text } = ui
+  const label = LINE_LABELS[line]
+  const isDev = line === 'dev'
 
   return (
     <Box key={`${name}-${line}`}>
-      <Text>{(isDev ? '' : name).padEnd(9)}</Text>
-      <Text dimColor>{line.padEnd(5)}</Text>
+      <Text color={label.colour} bold>{label.text.padEnd(5)}</Text>
       <Text color={counts.security === 0 ? 'success' : isDev ? 'warning' : 'error'} bold={counts.security > 0 && !isDev}>
         {counts.security} security
       </Text>
-      <Text dimColor> · </Text>
+      <Text dimColor> | </Text>
       <Text color={counts.other > 0 ? 'warning' : 'success'}>{counts.other} other</Text>
     </Box>
   )
 }
 
-function PackageRows({ ui, name, lines }: { ui: Ui; name: string; lines: PackageLines }) {
-  const { Box } = ui
+function PackageRows({ ui, name, lines, isFirst }: { ui: Ui; name: 'composer' | 'npm'; lines: PackageLines; isFirst: boolean }) {
+  const { Box, Text } = ui
 
   return (
-    <Box key={name} flexDirection="column">
-      <PackageRow ui={ui} name={name} line="prod" counts={lines.production} isDev={false} />
-      <PackageRow ui={ui} name={name} line="dev" counts={lines.dev} isDev />
+    <Box key={name} flexDirection="column" marginTop={isFirst ? 0 : 1}>
+      <Text key={`${name}-title`}>{MANAGER_LABELS[name]}</Text>
+      <PackageRow ui={ui} name={name} line="prod" counts={lines.production} />
+      <PackageRow ui={ui} name={name} line="dev" counts={lines.dev} />
     </Box>
   )
 }
@@ -171,8 +180,8 @@ function DependenciesSection({ ui, data }: { ui: Ui; data: WorkbenchData }) {
           {advisories.map(advisory => <Text key={`advisory-${advisory}`} color="error" wrap="truncate">{advisory}</Text>)}
         </Box>
       )}
-      {report.composer !== undefined && <PackageRows ui={ui} name="composer" lines={report.composer} />}
-      {report.npm !== undefined && <PackageRows ui={ui} name="npm" lines={report.npm} />}
+      {report.composer !== undefined && <PackageRows ui={ui} name="composer" lines={report.composer} isFirst />}
+      {report.npm !== undefined && <PackageRows ui={ui} name="npm" lines={report.npm} isFirst={report.composer === undefined} />}
       {report.errors.map((error, index) => <Text key={`dependency-error-${index}`} color="error" wrap="wrap">{error}</Text>)}
       <Text key="dependencies-checked" dimColor>
         {report.isChecking ? 'Checking…' : report.checkedAt !== undefined ? `Checked ${clockTime(report.checkedAt)}` : 'Not checked yet'}
