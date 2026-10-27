@@ -319,7 +319,11 @@ async function afterCommand($: EngineInterface, command: string, ran: ToolCallRe
 
 async function openSidebar($: EngineInterface): Promise<void> {
   try {
-    await $.ui.open({ id: PANE, title: 'Workbench' })
+    const opened = await $.ui.open({ id: PANE, title: 'Workbench' })
+
+    if (!opened.isPlaced) {
+      $.ui.log(`workbench: the sidebar is waiting to be placed: ${opened.reason}`)
+    }
   } catch (error) {
     $.ui.log(`workbench: the sidebar could not open: ${messageOf(error)}`)
   }

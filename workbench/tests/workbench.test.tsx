@@ -1,5 +1,5 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
-import type { On } from 'claude-code'
+import type { On, UiOpenResult } from 'claude-code'
 
 const NOW = Date.parse('2026-10-17T10:00:00Z')
 
@@ -13,19 +13,31 @@ const CONTEXT = { tokens: 150_000, window: 200_000, percent: 75 }
 
 const PEST_OUTPUT = '  ..⨯.\n\n  FAILED  Tests\\Feature\\InvoiceTest > it soft deletes   ExpectationFailedException\n\n  Tests:    1 failed, 3 passed (9 assertions)\n'
 
-type World = { commands: string[]; files: Record<string, string>; toasts: string[]; settle: () => Promise<void> }
+type World = {
+  commands: string[]
+  files: Record<string, string>
+  toasts: string[]
+  logs: string[]
+  opened: UiOpenResult
+  settle: () => Promise<void>
+}
 
 const PROJECT_FILES = ['/composer.lock', '/package-lock.json', '/.cloud/config.json']
 
 /** The engine beneath the plugin: by default a project with a lock file each, on Laravel Cloud, and a clean tree. */
 function world(on: On, projectFiles: string[] = PROJECT_FILES): World {
   const clock = mock.clock(on, { now: NOW })
-  const state: World = { commands: [], files: {}, toasts: [], settle: () => clock.settle() }
+  const state: World = { commands: [], files: {}, toasts: [], logs: [], opened: { isPlaced: true }, settle: () => clock.settle() }
 
   on('session.usage', () => ({ value: { startedAt: NOW, context: { ...CONTEXT }, rateLimits: [] } }))
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('command.register', () => ({ value: undefined }))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.open', () => ({ value: state.opened }))
+  on('ui.log', (_$, e) => {
+    state.logs.push(e.text)
+
+    return { value: undefined }
+  })
   on('ui.toast', (_$, e) => {
     state.toasts.push(e.text)
 
@@ -135,6 +147,16 @@ describe('the sidebar', () => {
       expect(await ui.find({ type: 'Text', text: /3f4febc9/ })).toBeDefined()
       await ui.unmount()
     }
+  })
+
+  test('logs why the sidebar is not placed', async ($, on) => {
+    const state = world(on)
+    state.opened = { isPlaced: false, reason: 'opened unasked below 144 columns (the terminal is 120)' }
+
+    await $.session.start({ cwd: '/app', surface: 'terminal', isInteractive: true })
+    await state.settle()
+
+    expect(state.logs).toContain('workbench: the sidebar is waiting to be placed: opened unasked below 144 columns (the terminal is 120)')
   })
 
   test('shows the dependencies and deploys sections, with their buttons, before anything is checked', async ($, on) => {
